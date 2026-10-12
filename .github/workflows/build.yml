@@ -173,3 +173,60 @@ jobs:
           name: mobipeg-gui-linux-sse42
           path: mobipeg-gui-linux-sse42.tar.gz
           retention-days: 30
+
+  build-windows-x86:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Windows cross-compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config mingw-w64 \
+            binutils-mingw-w64-i686
+
+      - name: Check modified SX encoder
+        run: |
+          grep -q '"pulse_refine"' libavcodec/vx_audio_enc.c || {
+            echo "ERROR: pulse_refine not found in source"
+            exit 1
+          }
+
+      - name: Configure Windows FFmpeg
+        run: |
+          ./configure \
+            --prefix="$PWD/dist-windows" \
+            --arch=x86 \
+            --target-os=mingw32 \
+            --cross-prefix=i686-w64-mingw32- \
+            --enable-cross-compile \
+            --enable-static \
+            --disable-shared \
+            --disable-doc \
+            --disable-debug \
+            --disable-ffplay \
+            --disable-x86asm \
+            --disable-autodetect \
+            --extra-ldflags="-static" \
+          || { tail -100 ffbuild/config.log; exit 1; }
+
+      - name: Compile Windows FFmpeg
+        run: |
+          make -j2
+          make install
+
+      - name: Package Windows executables
+        run: |
+          mkdir -p package
+          cp dist-windows/bin/ffmpeg.exe package/
+          cp dist-windows/bin/ffprobe.exe package/
+          cd package
+          zip -9 ../mobipeg-windows-x86.zip ffmpeg.exe ffprobe.exe
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: mobipeg-windows-x86
+          path: mobipeg-windows-x86.zip
+          retention-days: 30
