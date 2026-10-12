@@ -229,20 +229,20 @@ jobs:
         run: |
           set -eu
           DEPS="$GITHUB_WORKSPACE/deps-windows"
-          # Force pkg-config to use the Windows cross-built x264 metadata.
-          mkdir -p "$GITHUB_WORKSPACE/tools"
-          WRAPPER="$GITHUB_WORKSPACE/tools/i686-w64-mingw32-pkg-config"
-          printf '%s\n' '#!/usr/bin/env bash' \
-            'export PKG_CONFIG_LIBDIR="${GITHUB_WORKSPACE}/deps-windows/lib/pkgconfig"' \
-            'export PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/deps-windows/lib/pkgconfig"' \
-            'exec pkg-config "$@"' > "$WRAPPER"
-          chmod +x "$WRAPPER"
-          export PKG_CONFIG="$WRAPPER"
+          # Use the cross-built x264 metadata directly; no wrapper required.
+          export PKG_CONFIG_LIBDIR="$DEPS/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig"
+          export PKG_CONFIG="$(command -v pkg-config)"
           echo "=== Windows x264 pkg-config diagnostic ==="
           echo "PKG_CONFIG=$PKG_CONFIG"
+          echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
           "$PKG_CONFIG" --exists --print-errors x264 || { echo 'Cross x264 pkg-config lookup failed'; exit 1; }
           "$PKG_CONFIG" --modversion x264
           "$PKG_CONFIG" --cflags --libs --static x264
+          echo "=== Cross-built x264 archive ==="
+          file "$DEPS/lib/libx264.a"
+          i686-w64-mingw32-ar t "$DEPS/lib/libx264.a" | head -10
           ./configure \
             --prefix="$PWD/dist-windows" \
             --arch=x86 \
@@ -265,6 +265,15 @@ jobs:
             --extra-cflags="-I$DEPS/include" \
             --extra-ldflags="-L$DEPS/lib -static" \
             || { echo "=== FFmpeg configure failed ==="; tail -200 ffbuild/config.log; exit 1; }
+          echo "=== Codec availability immediately after configure ==="
+          grep -E 'CONFIG_(LIBX264|MOBICLIP|VX_AUDIO)_ENCODER|CONFIG_MODS_MUXER' config.h || true
+          if ! grep -q '^#define CONFIG_LIBX264_ENCODER 1' config.h || ! grep -q '^#define CONFIG_MOBICLIP_ENCODER 1' config.h; then
+            echo "=== x264-related configure diagnostics ==="
+            grep -in -C 6 'x264' ffbuild/config.log | tail -160 || true
+            echo "=== End of configure log ==="
+            tail -100 ffbuild/config.log
+            exit 1
+          fi
 
       - name: Build and install Windows FFmpeg
         run: |
