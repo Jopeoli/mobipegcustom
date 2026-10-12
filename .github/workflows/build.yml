@@ -174,60 +174,30 @@ jobs:
           path: mobipeg-gui-linux-sse42.tar.gz
           retention-days: 30
 
-  # Windows 32-bit build, including the modified x264 used by MobiClip.
   build-windows-x86:
     runs-on: ubuntu-22.04
-    env:
-      PKG_CONFIG_LIBDIR: ${{ github.workspace }}/deps-windows/lib/pkgconfig
-      PKG_CONFIG_PATH: ${{ github.workspace }}/deps-windows/lib/pkgconfig
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install cross-compilation tools
+      - name: Install Windows cross-compiler
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config mingw-w64 autoconf automake libtool nasm
+            build-essential pkg-config mingw-w64 \
+            binutils-mingw-w64-i686
 
-      - name: Build modified x264 for Windows x86
+      - name: Check modified SX encoder
         run: |
-          set -eu
-          DEPS="$GITHUB_WORKSPACE/deps-windows"
-          mkdir -p "$DEPS"
-          git clone --depth=1 https://github.com/quatric/x264.git x264-win-src
-          cd x264-win-src
-          ./configure \
-            --host=i686-w64-mingw32 \
-            --cross-prefix=i686-w64-mingw32- \
-            --prefix="$DEPS" \
-            --enable-static \
-            --disable-cli \
-            --disable-opencl \
-            --disable-asm
-          make -j"$(nproc)"
-          make install
-          echo "=== x264 install contents ==="
-          find "$DEPS" -maxdepth 4 -type f | sort
-          test -f "$DEPS/lib/libx264.a" || { echo "Missing Windows x264 static library"; exit 1; }
-          test -f "$DEPS/lib/pkgconfig/x264.pc" || { echo "Missing x264.pc"; exit 1; }
-          echo "=== x264.pc ==="
-          cat "$DEPS/lib/pkgconfig/x264.pc"
-          echo "=== pkg-config x264 ==="
-          pkg-config --modversion x264
-          pkg-config --cflags --libs --static x264
-          echo "=== Cross-compiler link test ==="
-          printf '#include <stdint.h>\n#include <x264.h>\nint main(void) { return x264_encoder_open(0) != 0; }\n' > /tmp/x264-check.c
-          i686-w64-mingw32-gcc /tmp/x264-check.c -o /tmp/x264-check.exe \
-            $(pkg-config --cflags --libs --static x264) -static
+          grep -q '"pulse_refine"' libavcodec/vx_audio_enc.c || {
+            echo "ERROR: pulse_refine not found in source"
+            exit 1
+          }
 
       - name: Configure Windows FFmpeg
         run: |
-          set -eu
-          DEPS="$GITHUB_WORKSPACE/deps-windows"
-          echo "=== Windows x264 pkg-config diagnostic ==="
-          echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
-          pkg-config --modversion x264
-          pkg-config --cflags --libs --static x264
+          
+      - name: Configure Windows FFmpeg
+        run: |
           ./configure \
             --prefix="$PWD/dist-windows" \
             --arch=x86 \
@@ -235,43 +205,36 @@ jobs:
             --cross-prefix=i686-w64-mingw32- \
             --enable-cross-compile \
             --enable-gpl \
-            --enable-libx264 \
             --enable-static \
             --disable-shared \
             --disable-doc \
             --disable-debug \
             --disable-ffplay \
             --disable-x86asm \
-            --pkg-config-flags=--static \
-            --extra-cflags="-I$DEPS/include" \
-            --extra-ldflags="-L$DEPS/lib -static" \
-            || { echo "=== FFmpeg configure failed ==="; tail -200 ffbuild/config.log; exit 1; }
+            --enable-encoder=mobiclip \
+            --enable-encoder=vx_audio \
+            --enable-decoder=mobiclip \
+            --enable-decoder=vx_audio \
+            --enable-muxer=mods \
+            --enable-demuxer=mods \
+            --extra-ldflags="-static" \
+          || { tail -100 ffbuild/config.log; exit 1; }
 
-      - name: Build and install Windows FFmpeg
+      - name: Compile Windows FFmpeg
         run: |
-          make -j"$(nproc)"
+          make -j2
           make install
 
-      - name: Verify required encoders and muxer
+      - name: Package Windows executables
         run: |
-          set -eu
-          # FFmpeg built for Windows cannot execute directly on this Linux runner.
-          # Inspect build configuration, which also catches missing x264 support.
-          grep -q '^#define CONFIG_LIBX264_ENCODER 1' config.h || \
-            { echo 'libx264 encoder is not enabled'; exit 1; }
-          grep -q '^#define CONFIG_MOBICLIP_ENCODER 1' config.h || \
-            { echo 'MobiClip encoder is not enabled'; exit 1; }
-          grep -q '^#define CONFIG_VX_AUDIO_ENCODER 1' config.h || \
-            { echo 'VX Audio encoder is not enabled'; exit 1; }
-          grep -q '^#define CONFIG_MODS_MUXER 1' config.h || \
-            { echo 'MODS muxer is not enabled'; exit 1; }
+          mkdir -p package
+          cp dist-windows/bin/ffmpeg.exe package/
+          cp dist-windows/bin/ffprobe.exe package/
+          cd package
+          zip -9 ../mobipeg-windows-x86.zip ffmpeg.exe ffprobe.exe
 
-      - name: Package Windows x86 binaries
-        run: |
-          cd dist-windows/bin
-          zip -9 ../../mobipeg-windows-x86.zip ffmpeg.exe ffprobe.exe
-
-      - uses: actions/upload-artifact@v6
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v6
         with:
           name: mobipeg-windows-x86
           path: mobipeg-windows-x86.zip
