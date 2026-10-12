@@ -174,30 +174,44 @@ jobs:
           path: mobipeg-gui-linux-sse42.tar.gz
           retention-days: 30
 
+  # Windows 32-bit build, including the modified x264 used by MobiClip.
   build-windows-x86:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Windows cross-compiler
+      - name: Install cross-compilation tools
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config mingw-w64 \
-            binutils-mingw-w64-i686
+            build-essential pkg-config mingw-w64 autoconf automake libtool nasm
 
-      - name: Check modified SX encoder
+      - name: Build modified x264 for Windows x86
         run: |
-          grep -q '"pulse_refine"' libavcodec/vx_audio_enc.c || {
-            echo "ERROR: pulse_refine not found in source"
-            exit 1
-          }
+          set -eu
+          DEPS="$GITHUB_WORKSPACE/deps-windows"
+          mkdir -p "$DEPS"
+          git clone --depth=1 https://github.com/quatric/x264.git x264-win-src
+          cd x264-win-src
+          ./configure \
+            --host=i686-w64-mingw32 \
+            --cross-prefix=i686-w64-mingw32- \
+            --prefix="$DEPS" \
+            --enable-static \
+            --disable-cli \
+            --disable-opencl \
+            --disable-asm
+          make -j"$(nproc)"
+          make install
+          test -f "$DEPS/lib/libx264.a"
+          test -f "$DEPS/lib/pkgconfig/x264.pc"
 
       - name: Configure Windows FFmpeg
         run: |
-          
-      - name: Configure Windows FFmpeg
-        run: |
+          set -eu
+          DEPS="$GITHUB_WORKSPACE/deps-windows"
+          export PKG_CONFIG_LIBDIR="$DEPS/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig"
           ./configure \
             --prefix="$PWD/dist-windows" \
             --arch=x86 \
@@ -205,36 +219,43 @@ jobs:
             --cross-prefix=i686-w64-mingw32- \
             --enable-cross-compile \
             --enable-gpl \
+            --enable-libx264 \
             --enable-static \
             --disable-shared \
             --disable-doc \
             --disable-debug \
             --disable-ffplay \
             --disable-x86asm \
-            --enable-encoder=mobiclip \
-            --enable-encoder=vx_audio \
-            --enable-decoder=mobiclip \
-            --enable-decoder=vx_audio \
-            --enable-muxer=mods \
-            --enable-demuxer=mods \
-            --extra-ldflags="-static" \
-          || { tail -100 ffbuild/config.log; exit 1; }
+            --pkg-config-flags=--static \
+            --extra-cflags="-I$DEPS/include" \
+            --extra-ldflags="-L$DEPS/lib -static" \
+            || { tail -100 ffbuild/config.log; exit 1; }
 
-      - name: Compile Windows FFmpeg
+      - name: Build and install Windows FFmpeg
         run: |
-          make -j2
+          make -j"$(nproc)"
           make install
 
-      - name: Package Windows executables
+      - name: Verify required encoders and muxer
         run: |
-          mkdir -p package
-          cp dist-windows/bin/ffmpeg.exe package/
-          cp dist-windows/bin/ffprobe.exe package/
-          cd package
-          zip -9 ../mobipeg-windows-x86.zip ffmpeg.exe ffprobe.exe
+          set -eu
+          # FFmpeg built for Windows cannot execute directly on this Linux runner.
+          # Inspect build configuration, which also catches missing x264 support.
+          grep -q '^#define CONFIG_LIBX264 1' config.h || \
+            { echo 'libx264 is not enabled'; exit 1; }
+          grep -q '^#define CONFIG_MOBICLIP_ENCODER 1' config.h || \
+            { echo 'MobiClip encoder is not enabled'; exit 1; }
+          grep -q '^#define CONFIG_VX_AUDIO_ENCODER 1' config.h || \
+            { echo 'VX Audio encoder is not enabled'; exit 1; }
+          grep -q '^#define CONFIG_MODS_MUXER 1' config.h || \
+            { echo 'MODS muxer is not enabled'; exit 1; }
 
-      - name: Upload Windows artifact
-        uses: actions/upload-artifact@v6
+      - name: Package Windows x86 binaries
+        run: |
+          cd dist-windows/bin
+          zip -9 ../../mobipeg-windows-x86.zip ffmpeg.exe ffprobe.exe
+
+      - uses: actions/upload-artifact@v6
         with:
           name: mobipeg-windows-x86
           path: mobipeg-windows-x86.zip
