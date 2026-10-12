@@ -96,6 +96,7 @@ typedef struct VXAudioEncContext {
     const AVClass *class;
     int nch;
     int ltp;                     /* option: search LTP lags (slow, better) */
+    int pulse_refine;            /* optional coordinate-descent pulse refinement */
     char *intra_periods_str;     /* option: CSV of period indices to force intra */
 
     VXAChan ch[MAX_CH];
@@ -473,6 +474,45 @@ static void encode_block_ch(VXAudioEncContext *s, int c, int64_t bi, uint8_t *ou
         }
     }
 
+    /* Optional post-search pulse refinement.  The normal analysis-by-synthesis
+     * chooses each pulse greedily, without considering its influence on later
+     * samples through the LPC recursion.  Re-evaluate the COMPLETE 128-sample
+     * block after changing one pulse by one grid step, keeping only strictly
+     * lower-error candidates.  No decoder or bitstream changes are required.
+     * One pass is deliberately bounded; this option is CPU intensive. */
+    if (s->pulse_refine) {
+        double current_err = run_aframe(ch, best_pfo, best_smi, idx, best_pad,
+                                        INIT_ACC, target, NULL, best_pv, 0);
+        for (int pass = 0; pass < s->pulse_refine; pass++) {
+            int improved = 0;
+            for (int k = 0; k < NUM_PULSES; k++) {
+                int old = best_pv[k], chosen = old;
+                double local_best = current_err;
+                for (int delta = -1; delta <= 1; delta += 2) {
+                    int trial = old + delta;
+                    double trial_err;
+                    if (trial < 0 || trial > 7)
+                        continue;
+                    best_pv[k] = trial;
+                    trial_err = run_aframe(ch, best_pfo, best_smi, idx,
+                                           best_pad, INIT_ACC, target,
+                                           NULL, best_pv, 0);
+                    if (trial_err < local_best) {
+                        local_best = trial_err;
+                        chosen = trial;
+                    }
+                }
+                best_pv[k] = chosen;
+                if (chosen != old) {
+                    current_err = local_best;
+                    improved = 1;
+                }
+            }
+            if (!improved)
+                break;
+        }
+    }
+
     /* commit with the exact decoder math */
     run_aframe(ch, best_pfo, best_smi, idx, best_pad, INIT_ACC,
                target, NULL, best_pv, 1);
@@ -647,6 +687,8 @@ static av_cold int vxa_close(AVCodecContext *avctx)
 static const AVOption vxa_options[] = {
     { "ltp", "search long-term-prediction lags (slower, better quality)",
       OFFSET(ltp), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, AE },
+    { "pulse_refine", "post-search pulse refinement passes (slower, experimental)",
+      OFFSET(pulse_refine), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 2, AE },
     { "intra_periods", "CSV of 128-sample period indices to force intra (mods "
       "keyframe audio re-prime); set by encode.py, not for manual use",
       OFFSET(intra_periods_str), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, AE },
