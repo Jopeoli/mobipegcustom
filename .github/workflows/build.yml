@@ -195,6 +195,9 @@ jobs:
 
       - name: Configure Windows FFmpeg
         run: |
+          
+      - name: Configure Windows FFmpeg
+        run: |
           ./configure \
             --prefix="$PWD/dist-windows" \
             --arch=x86 \
@@ -208,7 +211,12 @@ jobs:
             --disable-debug \
             --disable-ffplay \
             --disable-x86asm \
-            --disable-autodetect \
+            --enable-encoder=mobiclip \
+            --enable-encoder=vx_audio \
+            --enable-decoder=mobiclip \
+            --enable-decoder=vx_audio \
+            --enable-muxer=mods \
+            --enable-demuxer=mods \
             --extra-ldflags="-static" \
           || { tail -100 ffbuild/config.log; exit 1; }
 
