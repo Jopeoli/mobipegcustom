@@ -207,6 +207,10 @@ jobs:
             --disable-asm
           make -j"$(nproc)"
           make install
+          # Ensure pkg-config uses absolute cross-compiled x264 paths.
+          sed -i "s|^prefix=.*|prefix=$DEPS|" "$DEPS/lib/pkgconfig/x264.pc"
+          sed -i "s|^libdir=.*|libdir=$DEPS/lib|" "$DEPS/lib/pkgconfig/x264.pc"
+          sed -i "s|^includedir=.*|includedir=$DEPS/include|" "$DEPS/lib/pkgconfig/x264.pc"
           echo "=== x264 install contents ==="
           find "$DEPS" -maxdepth 4 -type f | sort
           test -f "$DEPS/lib/libx264.a" || { echo "Missing Windows x264 static library"; exit 1; }
@@ -225,13 +229,20 @@ jobs:
         run: |
           set -eu
           DEPS="$GITHUB_WORKSPACE/deps-windows"
+          # Force pkg-config to use the Windows cross-built x264 metadata.
+          mkdir -p "$GITHUB_WORKSPACE/tools"
+          WRAPPER="$GITHUB_WORKSPACE/tools/i686-w64-mingw32-pkg-config"
+          printf '%s\n' '#!/usr/bin/env bash' \
+            'export PKG_CONFIG_LIBDIR="${GITHUB_WORKSPACE}/deps-windows/lib/pkgconfig"' \
+            'export PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/deps-windows/lib/pkgconfig"' \
+            'exec pkg-config "$@"' > "$WRAPPER"
+          chmod +x "$WRAPPER"
+          export PKG_CONFIG="$WRAPPER"
           echo "=== Windows x264 pkg-config diagnostic ==="
           echo "PKG_CONFIG=$PKG_CONFIG"
-          command -v "$PKG_CONFIG"
-          "$PKG_CONFIG" --exists --print-errors x264
-          echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
-          pkg-config --modversion x264
-          pkg-config --cflags --libs --static x264
+          "$PKG_CONFIG" --exists --print-errors x264 || { echo 'Cross x264 pkg-config lookup failed'; exit 1; }
+          "$PKG_CONFIG" --modversion x264
+          "$PKG_CONFIG" --cflags --libs --static x264
           ./configure \
             --prefix="$PWD/dist-windows" \
             --arch=x86 \
@@ -249,7 +260,7 @@ jobs:
             --disable-debug \
             --disable-ffplay \
             --disable-x86asm \
-            --pkg-config=pkg-config \
+            --pkg-config="$PKG_CONFIG" \
             --pkg-config-flags=--static \
             --extra-cflags="-I$DEPS/include" \
             --extra-ldflags="-L$DEPS/lib -static" \
@@ -263,6 +274,8 @@ jobs:
       - name: Verify required encoders and muxer
         run: |
           set -eu
+          echo "=== Enabled codec configuration ==="
+          grep -E 'CONFIG_(LIBX264|MOBICLIP|VX_AUDIO)_ENCODER|CONFIG_MODS_MUXER' config.h || true
           # FFmpeg built for Windows cannot execute directly on this Linux runner.
           # Inspect build configuration, which also catches missing x264 support.
           grep -q '^#define CONFIG_LIBX264_ENCODER 1' config.h || \
