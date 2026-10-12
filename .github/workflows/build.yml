@@ -177,6 +177,9 @@ jobs:
   # Windows 32-bit build, including the modified x264 used by MobiClip.
   build-windows-x86:
     runs-on: ubuntu-22.04
+    env:
+      PKG_CONFIG_LIBDIR: ${{ github.workspace }}/deps-windows/lib/pkgconfig
+      PKG_CONFIG_PATH: ${{ github.workspace }}/deps-windows/lib/pkgconfig
     steps:
       - uses: actions/checkout@v5
 
@@ -203,15 +206,28 @@ jobs:
             --disable-asm
           make -j"$(nproc)"
           make install
-          test -f "$DEPS/lib/libx264.a"
-          test -f "$DEPS/lib/pkgconfig/x264.pc"
+          echo "=== x264 install contents ==="
+          find "$DEPS" -maxdepth 4 -type f | sort
+          test -f "$DEPS/lib/libx264.a" || { echo "Missing Windows x264 static library"; exit 1; }
+          test -f "$DEPS/lib/pkgconfig/x264.pc" || { echo "Missing x264.pc"; exit 1; }
+          echo "=== x264.pc ==="
+          cat "$DEPS/lib/pkgconfig/x264.pc"
+          echo "=== pkg-config x264 ==="
+          pkg-config --modversion x264
+          pkg-config --cflags --libs --static x264
+          echo "=== Cross-compiler link test ==="
+          printf '#include <stdint.h>\n#include <x264.h>\nint main(void) { return x264_encoder_open(0) != 0; }\n' > /tmp/x264-check.c
+          i686-w64-mingw32-gcc /tmp/x264-check.c -o /tmp/x264-check.exe \
+            $(pkg-config --cflags --libs --static x264) -static
 
       - name: Configure Windows FFmpeg
         run: |
           set -eu
           DEPS="$GITHUB_WORKSPACE/deps-windows"
-          export PKG_CONFIG_LIBDIR="$DEPS/lib/pkgconfig"
-          export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig"
+          echo "=== Windows x264 pkg-config diagnostic ==="
+          echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
+          pkg-config --modversion x264
+          pkg-config --cflags --libs --static x264
           ./configure \
             --prefix="$PWD/dist-windows" \
             --arch=x86 \
@@ -229,7 +245,7 @@ jobs:
             --pkg-config-flags=--static \
             --extra-cflags="-I$DEPS/include" \
             --extra-ldflags="-L$DEPS/lib -static" \
-            || { tail -100 ffbuild/config.log; exit 1; }
+            || { echo "=== FFmpeg configure failed ==="; tail -200 ffbuild/config.log; exit 1; }
 
       - name: Build and install Windows FFmpeg
         run: |
@@ -241,8 +257,8 @@ jobs:
           set -eu
           # FFmpeg built for Windows cannot execute directly on this Linux runner.
           # Inspect build configuration, which also catches missing x264 support.
-          grep -q '^#define CONFIG_LIBX264 1' config.h || \
-            { echo 'libx264 is not enabled'; exit 1; }
+          grep -q '^#define CONFIG_LIBX264_ENCODER 1' config.h || \
+            { echo 'libx264 encoder is not enabled'; exit 1; }
           grep -q '^#define CONFIG_MOBICLIP_ENCODER 1' config.h || \
             { echo 'MobiClip encoder is not enabled'; exit 1; }
           grep -q '^#define CONFIG_VX_AUDIO_ENCODER 1' config.h || \
