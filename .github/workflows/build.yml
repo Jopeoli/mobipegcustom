@@ -265,9 +265,10 @@ jobs:
             --extra-cflags="-I$DEPS/include" \
             --extra-ldflags="-L$DEPS/lib -static" \
             || { echo "=== FFmpeg configure failed ==="; tail -200 ffbuild/config.log; exit 1; }
-          echo "=== Codec availability immediately after configure ==="
-          grep -E 'CONFIG_(LIBX264|MOBICLIP|VX_AUDIO)_ENCODER|CONFIG_MODS_MUXER' config.h || true
-          if ! grep -q '^#define CONFIG_LIBX264_ENCODER 1' config.h || ! grep -q '^#define CONFIG_MOBICLIP_ENCODER 1' config.h; then
+          test -f config_components.h || { echo "Missing config_components.h"; exit 1; }
+          echo "=== Codec availability immediately after configure (config_components.h) ==="
+          grep -E 'CONFIG_(LIBX264|MOBICLIP|VX_AUDIO)_ENCODER|CONFIG_MODS_MUXER' config_components.h || true
+          if ! grep -q '^#define CONFIG_LIBX264_ENCODER 1' config_components.h || ! grep -q '^#define CONFIG_MOBICLIP_ENCODER 1' config_components.h; then
             echo "=== x264-related configure diagnostics ==="
             grep -in -C 6 'x264' ffbuild/config.log | tail -160 || true
             echo "=== End of configure log ==="
@@ -283,17 +284,18 @@ jobs:
       - name: Verify required encoders and muxer
         run: |
           set -eu
-          echo "=== Enabled codec configuration ==="
-          grep -E 'CONFIG_(LIBX264|MOBICLIP|VX_AUDIO)_ENCODER|CONFIG_MODS_MUXER' config.h || true
+          test -f config_components.h || { echo "Missing config_components.h"; exit 1; }
+          echo "=== Enabled codec configuration (config_components.h) ==="
+          grep -E 'CONFIG_(LIBX264|MOBICLIP|VX_AUDIO)_ENCODER|CONFIG_MODS_MUXER' config_components.h || true
           # FFmpeg built for Windows cannot execute directly on this Linux runner.
           # Inspect build configuration, which also catches missing x264 support.
-          grep -q '^#define CONFIG_LIBX264_ENCODER 1' config.h || \
+          grep -q '^#define CONFIG_LIBX264_ENCODER 1' config_components.h || \
             { echo 'libx264 encoder is not enabled'; exit 1; }
-          grep -q '^#define CONFIG_MOBICLIP_ENCODER 1' config.h || \
+          grep -q '^#define CONFIG_MOBICLIP_ENCODER 1' config_components.h || \
             { echo 'MobiClip encoder is not enabled'; exit 1; }
-          grep -q '^#define CONFIG_VX_AUDIO_ENCODER 1' config.h || \
+          grep -q '^#define CONFIG_VX_AUDIO_ENCODER 1' config_components.h || \
             { echo 'VX Audio encoder is not enabled'; exit 1; }
-          grep -q '^#define CONFIG_MODS_MUXER 1' config.h || \
+          grep -q '^#define CONFIG_MODS_MUXER 1' config_components.h || \
             { echo 'MODS muxer is not enabled'; exit 1; }
 
       - name: Package Windows x86 binaries
