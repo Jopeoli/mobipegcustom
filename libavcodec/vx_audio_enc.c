@@ -1,4 +1,4 @@
-a/*
+/*
  * MobiClip / ActImagine DS (.vx / .mods "SX") Audio encoder
  * Copyright (c) 2026 quatric - quatricsoftware@gmail.com
  *
@@ -52,7 +52,6 @@ a/*
  * ch0,ch1 within the packet (the .mods interleaving).
  */
 
-#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -327,12 +326,12 @@ static double run_aframe(VXAChan *c, int pfo, int smi, const int idx[3],
         int peak = 0, clips = 0, lpc_peak = 0;
         for (int i = 0; i < AFRAME_SAMPLES; i++) {
             int64_t a = samples[i] < 0 ? -(int64_t)samples[i] : samples[i];
-            if (a > peak) peak = (int)FFMIN(a, INT_MAX);
+            if (a > peak) peak = (int)FFMIN(a, INT32_MAX);
             if (samples[i] < -32768 || samples[i] > 32767) clips++;
         }
         for (int j = 0; j < 8; j++) {
             int64_t a = lpc[j] < 0 ? -(int64_t)lpc[j] : lpc[j];
-            if (a > lpc_peak) lpc_peak = (int)FFMIN(a, INT_MAX);
+            if (a > lpc_peak) lpc_peak = (int)FFMIN(a, INT32_MAX);
         }
         c->diag_peak = peak;
         c->diag_clip_count = clips;
