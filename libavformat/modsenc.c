@@ -640,6 +640,17 @@ static int mods_write_header(AVFormatContext *s)
         m->sx_mode  = 1;
         m->channels = ap->ch_layout.nb_channels;
         m->sx_rate  = ap->sample_rate ? ap->sample_rate : 32000;
+        /* On stream copy, MODS demuxer puts the codebooks in codecpar
+         * extradata: 16-byte VX header, then 0xC34 bytes per channel.
+         * Fresh encoder output instead delivers them as packet side data. */
+        if (ap->extradata && ap->extradata_size >=
+            16 + m->channels * SX_CODEBOOK_SIZE_1CH) {
+            m->sx_cbk = av_memdup(ap->extradata + 16,
+                                   m->channels * SX_CODEBOOK_SIZE_1CH);
+            if (!m->sx_cbk)
+                return AVERROR(ENOMEM);
+            m->sx_cbk_size = m->channels * SX_CODEBOOK_SIZE_1CH;
+        }
         if (m->channels < 1 || m->channels > 2)
             return AVERROR(EINVAL);
     }
@@ -773,18 +784,44 @@ static int mods_write_packet(AVFormatContext *s, AVPacket *pkt)
                 return AVERROR(ENOMEM);
             m->sx_cbk_size = (int)sd_size;
         }
-        if (pkt->size > 0) {
-            if (m->abuf_size + pkt->size > m->abuf_cap) {
+        /* Stream-copy VX packets from the MODS demuxer carry a 4-byte
+         * LE AFrame count followed by count * 20 bytes of SX mode-0
+         * blocks. Encoder-produced packets instead contain exactly one
+         * 20-byte block per channel and no count prefix. */
+        const uint8_t *audio = pkt->data;
+        int audio_size = pkt->size;
+        int nperiods = 0;
+        int period_bytes = m->channels * 20;
+        if (audio_size == period_bytes) {
+            nperiods = 1;
+        } else if (audio_size >= 4) {
+            uint32_t aframes = AV_RL32(audio);
+            if (aframes > 0 && aframes % m->channels == 0 &&
+                (uint64_t)aframes * 20 == (uint64_t)(audio_size - 4)) {
+                audio += 4;
+                audio_size -= 4;
+                nperiods = aframes / m->channels;
+            } else {
+                av_log(s, AV_LOG_ERROR,
+                       "mods/sx: unsupported VX packet layout (%d bytes, %u aframes)\n",
+                       pkt->size, aframes);
+                return AVERROR_INVALIDDATA;
+            }
+        } else if (audio_size != 0) {
+            return AVERROR_INVALIDDATA;
+        }
+        if (audio_size > 0) {
+            if (m->abuf_size + audio_size > m->abuf_cap) {
                 int nc = m->abuf_cap ? m->abuf_cap * 2 : 65536;
-                while (nc < m->abuf_size + pkt->size) nc *= 2;
+                while (nc < m->abuf_size + audio_size) nc *= 2;
                 uint8_t *nb = av_realloc(m->abuf, nc);
                 if (!nb)
                     return AVERROR(ENOMEM);
                 m->abuf = nb; m->abuf_cap = nc;
             }
-            memcpy(m->abuf + m->abuf_size, pkt->data, pkt->size);
-            m->abuf_size += pkt->size;
-            m->sx_periods++;
+            memcpy(m->abuf + m->abuf_size, audio, audio_size);
+            m->abuf_size += audio_size;
+            m->sx_periods += nperiods;
         }
         return 0;
     }
