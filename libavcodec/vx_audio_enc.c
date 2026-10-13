@@ -1,4 +1,4 @@
-/*
+a/*
  * MobiClip / ActImagine DS (.vx / .mods "SX") Audio encoder
  * Copyright (c) 2026 quatric - quatricsoftware@gmail.com
  *
@@ -52,6 +52,7 @@
  * ch0,ch1 within the packet (the .mods interleaving).
  */
 
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,6 +91,9 @@ typedef struct VXAChan {
     /* trained model */
     int16_t vq[3][VQN][8];
     int32_t base[8];
+    /* Diagnostic values from the last committed synthesis block. */
+    int diag_peak, diag_clip_count, diag_lpc_peak;
+    double diag_mse;
 } VXAChan;
 
 typedef struct VXAudioEncContext {
@@ -97,6 +101,7 @@ typedef struct VXAudioEncContext {
     int nch;
     int ltp;                     /* option: search LTP lags (slow, better) */
     int pulse_refine;            /* optional coordinate-descent pulse refinement */
+    int vx_diag;                 /* diagnostic logging; does not change encoding */
     char *intra_periods_str;     /* option: CSV of period indices to force intra */
 
     VXAChan ch[MAX_CH];
@@ -319,6 +324,20 @@ static double run_aframe(VXAChan *c, int pfo, int smi, const int idx[3],
     }
 
     if (commit) {
+        int peak = 0, clips = 0, lpc_peak = 0;
+        for (int i = 0; i < AFRAME_SAMPLES; i++) {
+            int64_t a = samples[i] < 0 ? -(int64_t)samples[i] : samples[i];
+            if (a > peak) peak = (int)FFMIN(a, INT_MAX);
+            if (samples[i] < -32768 || samples[i] > 32767) clips++;
+        }
+        for (int j = 0; j < 8; j++) {
+            int64_t a = lpc[j] < 0 ? -(int64_t)lpc[j] : lpc[j];
+            if (a > lpc_peak) lpc_peak = (int)FFMIN(a, INT_MAX);
+        }
+        c->diag_peak = peak;
+        c->diag_clip_count = clips;
+        c->diag_lpc_peak = lpc_peak;
+        c->diag_mse = err / AFRAME_SAMPLES;
         memcpy(c->pulses_prev2, c->pulses_prev, sizeof(c->pulses_prev2));
         c->have_prev2 = c->have_prev;
         memcpy(c->pulses_prev, pulses, sizeof(c->pulses_prev));
@@ -517,6 +536,16 @@ static void encode_block_ch(VXAudioEncContext *s, int c, int64_t bi, uint8_t *ou
     run_aframe(ch, best_pfo, best_smi, idx, best_pad, INIT_ACC,
                target, NULL, best_pv, 1);
 
+    if (s->vx_diag && ((bi % 256) == 0 || ch->diag_clip_count ||
+                       ch->diag_peak > 30000 || ch->diag_lpc_peak > 32767)) {
+        av_log(NULL, AV_LOG_WARNING,
+               "VX_DIAG block=%"PRId64" ch=%d intra=%d pfo=%d gain_idx=%d "
+               "scale=%d lpc_peak=%d pcm_peak=%d clip=%d mse=%.2f\n",
+               bi, c, intra, best_pfo, best_smi, ch->scale_prev,
+               ch->diag_lpc_peak, ch->diag_peak,
+               ch->diag_clip_count, ch->diag_mse);
+    }
+
     /* pack: header words + 8 pulse words (mode 0), little-endian on disk */
     {
         uint16_t w[10];
@@ -689,6 +718,8 @@ static const AVOption vxa_options[] = {
       OFFSET(ltp), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, AE },
     { "pulse_refine", "post-search pulse refinement passes (slower, experimental)",
       OFFSET(pulse_refine), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 2, AE },
+    { "vx_diag", "log reconstruction gain, peak, clipping, LPC and MSE",
+      OFFSET(vx_diag), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, AE },
     { "intra_periods", "CSV of 128-sample period indices to force intra (mods "
       "keyframe audio re-prime); set by encode.py, not for manual use",
       OFFSET(intra_periods_str), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, AE },
